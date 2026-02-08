@@ -56,8 +56,21 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 3. FETCH GIT DATA & SEND TO WEBVIEW
     try {
-      // Get last 20 commits for the demo
-      const log = await git.log(["-n", "20"]);
+      // Get last 100 commits with all branches and parent info
+      const log = await git.log({
+        "--all": null,
+        maxCount: 100,
+        "--date-order": null,
+        format: {
+          hash: "%H",
+          parents: "%P",
+          date: "%ai",
+          message: "%s",
+          refs: "%D",
+          author_name: "%aN",
+          author_email: "%ae",
+        },
+      });
 
       // Send the data to the frontend
       currentPanel.webview.postMessage({

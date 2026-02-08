@@ -40,6 +40,23 @@
         gap: 10px;
         width: 220px;
       }
+      #branch-panel {
+        position: absolute;
+        top: 50px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 10px;
+        border-radius: 8px;
+        color: #2dba4e;
+        font-family: monospace;
+        pointer-events: auto;
+        display: none;
+        flex-direction: column;
+        gap: 5px;
+        width: 200px;
+        max-height: 300px;
+        overflow-y: auto;
+      }
       .control-group {
         display: flex;
         flex-direction: column;
@@ -73,6 +90,18 @@
         width: 100%;
         accent-color: #2dba4e;
       }
+      .branch-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .branch-item input {
+        accent-color: #2dba4e;
+        width: auto;
+        margin: 0;
+        cursor: pointer;
+      }
       #toggle-config {
         position: absolute;
         bottom: 10px;
@@ -94,6 +123,7 @@
   </head>
   <body>
     <div id="info">Waiting for Git data...</div>
+    <div id="branch-panel"></div>
     <div id="config-panel">
       <div class="control-group">
         <label>Text Size <span id="val-text">0.030</span></label>
@@ -137,6 +167,17 @@
           max="50"
           step="1"
           value="20.0"
+        />
+      </div>
+      <div class="control-group">
+        <label>Y Translate <span id="val-y">0.0</span></label>
+        <input
+          type="range"
+          id="sceneY"
+          min="-50"
+          max="200"
+          step="1"
+          value="0.0"
         />
       </div>
       <div class="control-group">
@@ -223,13 +264,18 @@
 
       const nodes = [];
       let currentCommits = [];
+      let allCommits = [];
+      let branchVisibility = new Map();
+      let branchTips = new Map();
       let textScale = 0.03;
 
       // Listen for data from the Extension
       window.addEventListener("message", (event) => {
         const message = event.data;
         if (message.command === "loadCommits") {
-          renderCommits(message.data);
+          allCommits = message.data;
+          extractBranches(allCommits);
+          filterAndRender();
         }
       });
 
@@ -270,6 +316,108 @@
         return mesh;
       }
 
+      function extractBranches(commits) {
+        branchTips.clear();
+        const newBranches = new Set();
+
+        commits.forEach((c) => {
+          if (!c.refs) return;
+          const refs = c.refs.split(",").map((r) => r.trim());
+          refs.forEach((ref) => {
+            let name = ref;
+            if (name.startsWith("HEAD -> ")) {
+              name = name.replace("HEAD -> ", "");
+            }
+            if (name.startsWith("tag: ")) return;
+            if (name === "HEAD") return;
+
+            branchTips.set(name, c.hash);
+            newBranches.add(name);
+          });
+        });
+
+        const oldVisibility = new Map(branchVisibility);
+        branchVisibility.clear();
+        newBranches.forEach((b) => {
+          if (oldVisibility.has(b)) {
+            branchVisibility.set(b, oldVisibility.get(b));
+          } else {
+            branchVisibility.set(b, true);
+          }
+        });
+
+        renderBranchPanel();
+      }
+
+      function renderBranchPanel() {
+        const panel = document.getElementById("branch-panel");
+        panel.innerHTML = "";
+
+        if (branchVisibility.size === 0) {
+          panel.style.display = "none";
+          return;
+        }
+        panel.style.display = "flex";
+
+        branchVisibility.forEach((visible, name) => {
+          const div = document.createElement("div");
+          div.className = "branch-item";
+
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = visible;
+          checkbox.onchange = (e) => {
+            branchVisibility.set(name, e.target.checked);
+            filterAndRender();
+          };
+
+          const label = document.createElement("span");
+          label.innerText = name;
+          label.onclick = () => {
+            checkbox.checked = !checkbox.checked;
+            checkbox.dispatchEvent(new Event("change"));
+          };
+
+          div.appendChild(checkbox);
+          div.appendChild(label);
+          panel.appendChild(div);
+        });
+      }
+
+      function filterAndRender() {
+        const visibleHashes = new Set();
+        const queue = [];
+        const commitMap = new Map();
+        allCommits.forEach((c) => commitMap.set(c.hash, c));
+
+        branchVisibility.forEach((visible, name) => {
+          if (visible) {
+            const hash = branchTips.get(name);
+            if (hash && !visibleHashes.has(hash)) {
+              visibleHashes.add(hash);
+              queue.push(hash);
+            }
+          }
+        });
+
+        while (queue.length > 0) {
+          const hash = queue.shift();
+          const commit = commitMap.get(hash);
+          if (!commit) continue;
+
+          const parents = commit.parents ? commit.parents.split(" ") : [];
+          parents.forEach((p) => {
+            if (p && commitMap.has(p) && !visibleHashes.has(p)) {
+              visibleHashes.add(p);
+              queue.push(p);
+            }
+          });
+        }
+
+        const filtered = allCommits.filter((c) => visibleHashes.has(c.hash));
+        renderCommits(filtered);
+      }
+
       function renderCommits(commits) {
         currentCommits = commits;
         document.getElementById("info").innerText =
@@ -288,15 +436,54 @@
         });
         nodes.length = 0;
 
-        // Render commits as a stack
-        // index 0 is the latest commit (HEAD), so it goes at the top
-        commits.forEach((commit, index) => {
-          const yPos = (commits.length - index) * 1.5; // Stack upwards
+        // 1. Sort commits by date (Oldest -> Newest) for processing
+        // Git log usually gives Newest -> Oldest
+        const sortedCommits = [...commits].reverse();
+
+        // 2. Calculate Positions
+        const commitMap = new Map(); // hash -> { x, y, lane }
+        const laneTips = new Map(); // laneIndex -> commitHash (last commit in this lane)
+        let maxLane = 0;
+
+        sortedCommits.forEach((commit, index) => {
+          const yPos = index * 1.5; // Stack upwards based on time
+          let lane = 0;
+
+          // Parse parents
+          const parents = commit.parents ? commit.parents.split(" ") : [];
+          const primaryParentHash = parents[0];
+
+          if (!primaryParentHash || !commitMap.has(primaryParentHash)) {
+            // Root commit or parent not found in this batch: start new lane
+            // Try to find a free lane or just increment
+            lane = maxLane++;
+          } else {
+            const parentNode = commitMap.get(primaryParentHash);
+
+            // Check if parent's lane is already "continued" by another child
+            if (laneTips.get(parentNode.lane) === primaryParentHash) {
+              // Continue parent's lane (Vertical growth)
+              lane = parentNode.lane;
+            } else {
+              // Branch off! (45 degree angle effect comes from x change + y change)
+              lane = maxLane++;
+            }
+          }
+
+          const xPos = lane * 2.0; // Spacing between branches
+
+          commitMap.set(commit.hash, {
+            x: xPos,
+            y: yPos,
+            lane: lane,
+            data: commit,
+          });
+          laneTips.set(lane, commit.hash);
 
           // 1. Create the Sphere (The Commit)
           const sphere = new THREE.Mesh(nodeGeometry, nodeMaterial);
           sphere.position.y = yPos;
-          sphere.position.x = Math.sin(yPos * 0.5) * 0.5; // Slight spiral
+          sphere.position.x = xPos;
           scene.add(sphere);
           nodes.push(sphere);
 
@@ -305,35 +492,35 @@
             const firstLine = commit.message.split("\n")[0];
             const label = createTextLabel(firstLine);
             // Position to the right of the sphere
-            label.position.set(
-              sphere.position.x + 0.8 + label.userData.width / 2,
-              yPos,
-              0,
-            );
+            label.position.set(xPos + 0.8 + label.userData.width / 2, yPos, 0);
             scene.add(label);
             nodes.push(label);
           }
 
-          // 3. Create the Stem connection to the next node
-          if (index < commits.length - 1) {
-            const nextY = (commits.length - (index + 1)) * 1.5;
-            const points = [];
-            points.push(new THREE.Vector3(Math.sin(yPos * 0.5) * 0.5, yPos, 0));
-            points.push(
-              new THREE.Vector3(Math.sin(nextY * 0.5) * 0.5, nextY, 0),
-            );
+          // 3. Create Stems (Lines to parents)
+          parents.forEach((parentHash) => {
+            if (commitMap.has(parentHash)) {
+              const parentNode = commitMap.get(parentHash);
 
-            const stemGeo = new THREE.BufferGeometry().setFromPoints(points);
-            const line = new THREE.Line(stemGeo, stemMaterial);
-            scene.add(line);
-            nodes.push(line);
-          }
+              const points = [];
+              points.push(new THREE.Vector3(xPos, yPos, 0));
+              points.push(new THREE.Vector3(parentNode.x, parentNode.y, 0));
+
+              const stemGeo = new THREE.BufferGeometry().setFromPoints(points);
+              const line = new THREE.Line(stemGeo, stemMaterial);
+              scene.add(line);
+              nodes.push(line);
+            }
+          });
         });
 
         // Adjust camera to look at the middle of the stalk
         const centerY = commits.length * 0.75;
-        camera.position.set(20, centerY, 26);
-        controls.target.set(20, centerY, 0);
+        // Center X based on max lanes
+        const centerX = (maxLane * 2.0) / 2;
+
+        camera.position.set(centerX, centerY, 40);
+        controls.target.set(centerX, centerY, 0);
         controls.update();
         syncSliders();
       }
@@ -349,6 +536,7 @@
       const zoomSlider = document.getElementById("sceneZoom");
       const rotateSlider = document.getElementById("sceneRotate");
       const xSlider = document.getElementById("sceneX");
+      const ySlider = document.getElementById("sceneY");
       const zSlider = document.getElementById("sceneZ");
       const fogSlider = document.getElementById("sceneFog");
 
@@ -356,15 +544,19 @@
         const zoom = parseFloat(zoomSlider.value);
         const rotate = parseFloat(rotateSlider.value);
         const x = parseFloat(xSlider.value);
+        const y = parseFloat(ySlider.value);
         const z = parseFloat(zSlider.value);
         const fog = parseFloat(fogSlider.value);
 
         // Update Target (Translate)
         const deltaX = x - controls.target.x;
+        const deltaY = y - controls.target.y;
         const deltaZ = z - controls.target.z;
         controls.target.x = x;
+        controls.target.y = y;
         controls.target.z = z;
         camera.position.x += deltaX;
+        camera.position.y += deltaY;
         camera.position.z += deltaZ;
 
         // Update Fog
@@ -401,6 +593,7 @@
         zoomSlider.value = spherical.radius;
         rotateSlider.value = spherical.theta;
         xSlider.value = controls.target.x;
+        ySlider.value = controls.target.y;
         zSlider.value = controls.target.z;
         fogSlider.value = scene.fog.density;
 
@@ -417,6 +610,9 @@
         document.getElementById("val-x").innerText = parseFloat(
           xSlider.value,
         ).toFixed(1);
+        document.getElementById("val-y").innerText = parseFloat(
+          ySlider.value,
+        ).toFixed(1);
         document.getElementById("val-z").innerText = parseFloat(
           zSlider.value,
         ).toFixed(1);
@@ -425,9 +621,11 @@
         ).toFixed(3);
       }
 
-      [zoomSlider, rotateSlider, xSlider, zSlider, fogSlider].forEach((el) => {
-        el.addEventListener("input", updateSceneFromSliders);
-      });
+      [zoomSlider, rotateSlider, xSlider, ySlider, zSlider, fogSlider].forEach(
+        (el) => {
+          el.addEventListener("input", updateSceneFromSliders);
+        },
+      );
 
       // Sync sliders when mouse interacts with scene
       controls.addEventListener("change", syncSliders);
