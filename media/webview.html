@@ -25,10 +25,148 @@
       canvas {
         display: block;
       }
+      #config-panel {
+        position: absolute;
+        bottom: 50px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 15px;
+        border-radius: 8px;
+        color: #2dba4e;
+        font-family: monospace;
+        pointer-events: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        width: 220px;
+      }
+      .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .control-group label {
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .button-group {
+        display: flex;
+        gap: 10px;
+        margin-top: 5px;
+      }
+      button {
+        background: #238636;
+        border: 1px solid rgba(240, 246, 252, 0.1);
+        color: #ffffff;
+        padding: 5px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 12px;
+        flex: 1;
+      }
+      button:hover {
+        background: #2ea043;
+      }
+      input[type="range"] {
+        width: 100%;
+        accent-color: #2dba4e;
+      }
+      #toggle-config {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: #238636;
+        border: 1px solid rgba(240, 246, 252, 0.1);
+        color: #ffffff;
+        padding: 5px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-family: inherit;
+        font-size: 12px;
+        width: 250px;
+      }
+      #toggle-config:hover {
+        background: #2ea043;
+      }
     </style>
   </head>
   <body>
     <div id="info">Waiting for Git data...</div>
+    <div id="config-panel">
+      <div class="control-group">
+        <label>Text Size <span id="val-text">0.030</span></label>
+        <input
+          type="range"
+          id="textSize"
+          min="0.01"
+          max="0.1"
+          step="0.005"
+          value="0.030"
+        />
+      </div>
+      <div class="control-group">
+        <label>Zoom <span id="val-zoom">26.0</span></label>
+        <input
+          type="range"
+          id="sceneZoom"
+          min="2"
+          max="100"
+          step="0.5"
+          value="26.0"
+        />
+      </div>
+      <div class="control-group">
+        <label>Rotate <span id="val-rotate">0.00</span></label>
+        <input
+          type="range"
+          id="sceneRotate"
+          min="-3.15"
+          max="3.15"
+          step="0.05"
+          value="0.00"
+        />
+      </div>
+      <div class="control-group">
+        <label>X Translate <span id="val-x">20.0</span></label>
+        <input
+          type="range"
+          id="sceneX"
+          min="-50"
+          max="50"
+          step="1"
+          value="20.0"
+        />
+      </div>
+      <div class="control-group">
+        <label>Z Translate <span id="val-z">0.0</span></label>
+        <input
+          type="range"
+          id="sceneZ"
+          min="-50"
+          max="50"
+          step="1"
+          value="0.0"
+        />
+      </div>
+      <div class="control-group">
+        <label>Fog <span id="val-fog">0.008</span></label>
+        <input
+          type="range"
+          id="sceneFog"
+          min="0"
+          max="0.15"
+          step="0.001"
+          value="0.008"
+        />
+      </div>
+      <div class="button-group">
+        <button id="btnFit">Fit Scene</button>
+        <button id="btnLeft">Left Align</button>
+      </div>
+    </div>
+    <button id="toggle-config">Hide Config</button>
     <div id="container"></div>
     <script type="importmap">
       {
@@ -45,7 +183,7 @@
       // 1. Scene Setup
       const scene = new THREE.Scene();
       // Add some fog to blend into VS Code background
-      scene.fog = new THREE.FogExp2(0x0d1117, 0.05);
+      scene.fog = new THREE.FogExp2(0x0d1117, 0.008);
 
       const camera = new THREE.PerspectiveCamera(
         75,
@@ -84,6 +222,8 @@
       const stemMaterial = new THREE.LineBasicMaterial({ color: 0x58a6ff });
 
       const nodes = [];
+      let currentCommits = [];
+      let textScale = 0.03;
 
       // Listen for data from the Extension
       window.addEventListener("message", (event) => {
@@ -94,6 +234,9 @@
       });
 
       function createTextLabel(text) {
+        if (text.length > 40) {
+          text = text.substring(0, 40) + "...";
+        }
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         const fontSize = 24;
@@ -118,7 +261,7 @@
           depthWrite: false,
         });
 
-        const scale = 0.05;
+        const scale = textScale;
         const width = canvas.width * scale;
         const height = canvas.height * scale;
         const geometry = new THREE.PlaneGeometry(width, height);
@@ -128,6 +271,7 @@
       }
 
       function renderCommits(commits) {
+        currentCommits = commits;
         document.getElementById("info").innerText =
           "🌿 Loaded " + commits.length + " commits";
 
@@ -188,10 +332,137 @@
 
         // Adjust camera to look at the middle of the stalk
         const centerY = commits.length * 0.75;
-        camera.position.set(10, centerY, commits.length * 1.5);
+        camera.position.set(20, centerY, 26);
+        controls.target.set(20, centerY, 0);
+        controls.update();
+        syncSliders();
+      }
+
+      // UI Event Listeners
+      document.getElementById("textSize").addEventListener("input", (e) => {
+        textScale = parseFloat(e.target.value);
+        document.getElementById("val-text").innerText = textScale.toFixed(3);
+        if (currentCommits.length) renderCommits(currentCommits);
+      });
+
+      // Scene Manipulation Sliders
+      const zoomSlider = document.getElementById("sceneZoom");
+      const rotateSlider = document.getElementById("sceneRotate");
+      const xSlider = document.getElementById("sceneX");
+      const zSlider = document.getElementById("sceneZ");
+      const fogSlider = document.getElementById("sceneFog");
+
+      function updateSceneFromSliders() {
+        const zoom = parseFloat(zoomSlider.value);
+        const rotate = parseFloat(rotateSlider.value);
+        const x = parseFloat(xSlider.value);
+        const z = parseFloat(zSlider.value);
+        const fog = parseFloat(fogSlider.value);
+
+        // Update Target (Translate)
+        const deltaX = x - controls.target.x;
+        const deltaZ = z - controls.target.z;
+        controls.target.x = x;
+        controls.target.z = z;
+        camera.position.x += deltaX;
+        camera.position.z += deltaZ;
+
+        // Update Fog
+        scene.fog.density = fog;
+
+        // Update Rotation and Zoom (Spherical relative to target)
+        const offset = new THREE.Vector3().subVectors(
+          camera.position,
+          controls.target,
+        );
+        const spherical = new THREE.Spherical().setFromVector3(offset);
+
+        spherical.radius = zoom;
+        spherical.theta = rotate;
+
+        offset.setFromSpherical(spherical);
+        camera.position.copy(controls.target).add(offset);
+
+        controls.update();
+        updateLabels();
+      }
+
+      function syncSliders() {
+        // Don't sync if user is currently dragging a slider
+        if (document.activeElement && document.activeElement.type === "range")
+          return;
+
+        const offset = new THREE.Vector3().subVectors(
+          camera.position,
+          controls.target,
+        );
+        const spherical = new THREE.Spherical().setFromVector3(offset);
+
+        zoomSlider.value = spherical.radius;
+        rotateSlider.value = spherical.theta;
+        xSlider.value = controls.target.x;
+        zSlider.value = controls.target.z;
+        fogSlider.value = scene.fog.density;
+
+        updateLabels();
+      }
+
+      function updateLabels() {
+        document.getElementById("val-zoom").innerText = parseFloat(
+          zoomSlider.value,
+        ).toFixed(1);
+        document.getElementById("val-rotate").innerText = parseFloat(
+          rotateSlider.value,
+        ).toFixed(2);
+        document.getElementById("val-x").innerText = parseFloat(
+          xSlider.value,
+        ).toFixed(1);
+        document.getElementById("val-z").innerText = parseFloat(
+          zSlider.value,
+        ).toFixed(1);
+        document.getElementById("val-fog").innerText = parseFloat(
+          fogSlider.value,
+        ).toFixed(3);
+      }
+
+      [zoomSlider, rotateSlider, xSlider, zSlider, fogSlider].forEach((el) => {
+        el.addEventListener("input", updateSceneFromSliders);
+      });
+
+      // Sync sliders when mouse interacts with scene
+      controls.addEventListener("change", syncSliders);
+
+      // Toggle Config Panel
+      const configPanel = document.getElementById("config-panel");
+      const toggleBtn = document.getElementById("toggle-config");
+      toggleBtn.addEventListener("click", () => {
+        if (configPanel.style.display === "none") {
+          configPanel.style.display = "flex";
+          toggleBtn.innerText = "Hide Config";
+        } else {
+          configPanel.style.display = "none";
+          toggleBtn.innerText = "Show Config";
+        }
+      });
+
+      document.getElementById("btnFit").addEventListener("click", () => {
+        if (!currentCommits.length) return;
+        const centerY = currentCommits.length * 0.75;
+        camera.position.set(10, centerY, currentCommits.length * 1.5);
         controls.target.set(0, centerY, 0);
         controls.update();
-      }
+        syncSliders();
+      });
+
+      document.getElementById("btnLeft").addEventListener("click", () => {
+        if (!currentCommits.length) return;
+        const centerY = currentCommits.length * 0.75;
+        camera.position.set(10, centerY, currentCommits.length * 1.5);
+        // Look to the right (positive X) so the scene (at X=0) appears on the left
+        controls.target.set(8, centerY, 0);
+        controls.update();
+        syncSliders();
+      });
 
       // 3. Animation Loop
       function animate() {
