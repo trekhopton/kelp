@@ -1,11 +1,23 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
+import { simpleGit, SimpleGit } from "simple-git";
 
 export function activate(context: vscode.ExtensionContext) {
   let currentPanel: vscode.WebviewPanel | undefined = undefined;
 
-  let disposable = vscode.commands.registerCommand("git3d.start", () => {
+  let disposable = vscode.commands.registerCommand("git3d.start", async () => {
+    // 1. Check if user has a folder open
+    if (!vscode.workspace.workspaceFolders) {
+      vscode.window.showErrorMessage(
+        "🌿 Kelp Branches: Please open a folder with a Git repo first!",
+      );
+      return;
+    }
+
+    const rootPath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+    const git: SimpleGit = simpleGit(rootPath);
+
     const columnToShowIn = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
       : undefined;
@@ -15,7 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
     } else {
       currentPanel = vscode.window.createWebviewPanel(
         "git3d",
-        "Git 3D Visualiser",
+        "Kelp Branches",
         columnToShowIn || vscode.ViewColumn.One,
         {
           enableScripts: true,
@@ -40,6 +52,24 @@ export function activate(context: vscode.ExtensionContext) {
         null,
         context.subscriptions,
       );
+    }
+
+    // 3. FETCH GIT DATA & SEND TO WEBVIEW
+    try {
+      // Get last 20 commits for the demo
+      const log = await git.log(["-n", "20"]);
+
+      // Send the data to the frontend
+      currentPanel.webview.postMessage({
+        command: "loadCommits",
+        data: log.all,
+      });
+
+      vscode.window.showInformationMessage(
+        `🌿 Kelp Loaded: ${log.total} commits found.`,
+      );
+    } catch (err) {
+      vscode.window.showErrorMessage("Error reading Git history: " + err);
     }
   });
 
